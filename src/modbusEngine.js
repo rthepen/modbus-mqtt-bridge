@@ -126,6 +126,9 @@ class ModbusEngine {
 
             if (offset < 0 || offset >= dataArray.length) continue;
 
+            // Growatt Specific: Combine two 16-bit registers into one 32-bit value.
+            // Address 1 (Ppv) and Address 35 (Output Power) are uint32.
+            // The high 16 bits are in the first register, low 16 bits in the second.
             let val = reg.data_type === 'uint32' 
               ? (dataArray[offset] << 16) | dataArray[offset + 1]
               : dataArray[offset];

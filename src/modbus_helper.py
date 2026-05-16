@@ -26,6 +26,9 @@ def run_modbus():
     slave_id = int(sys.argv[3])
     action = sys.argv[4]
 
+    # Growatt Quirks:
+    # 1. USR-N580 gateways often require RTU-over-TCP (FramerType.RTU).
+    # 2. Block sizes must be kept small (e.g. 30) to prevent hardware timeouts.
     client = ModbusTcpClient(ip, port=port, timeout=5, framer=FramerType.RTU)
     if not client.connect():
         print(json.dumps({'error': 'Connection failed'}))
