@@ -9,6 +9,7 @@ class ModbusEngine {
     this.timers = [];
     this.statuses = {}; // Track 'online' or 'offline'
     this.errorCounts = {};
+    this.isPolling = {};
   }
 
   async start() {
@@ -43,75 +44,85 @@ class ModbusEngine {
   }
 
   async pollDevice(deviceConfig) {
-    const client = this.devices[deviceConfig.id];
+    if (this.isPolling[deviceConfig.id]) {
+      return; // Skip this poll, previous one is still running
+    }
+    this.isPolling[deviceConfig.id] = true;
 
-    if (!client.isOpen) {
-      try {
-        await client.connectTCP(deviceConfig.ip, { port: deviceConfig.port });
-        client.setID(deviceConfig.slave_id);
-        client.setTimeout(3000);
+    try {
+      const client = this.devices[deviceConfig.id];
+
+      if (!client.isOpen) {
+        try {
+          await client.connectTCP(deviceConfig.ip, { port: deviceConfig.port });
+          client.setID(deviceConfig.slave_id);
+          client.setTimeout(3000);
+          this.errorCounts[deviceConfig.id] = 0;
+          this.setStatus(deviceConfig, 'online');
+        } catch (e) {
+          logger.error(`Connection failed for ${deviceConfig.name}: ${e.message}`);
+          this.setStatus(deviceConfig, 'offline');
+          return;
+        }
+      }
+
+      let successCount = 0;
+
+      for (const reg of deviceConfig.registers || []) {
+        try {
+          let val = null;
+          if (reg.type === 'input') {
+            const res = await client.readInputRegisters(reg.address, reg.data_type === 'uint32' ? 2 : 1);
+            if (reg.data_type === 'uint32') {
+               val = (res.data[0] << 16) | res.data[1];
+            } else {
+               val = res.data[0];
+            }
+          } else if (reg.type === 'holding') {
+            const res = await client.readHoldingRegisters(reg.address, reg.data_type === 'uint32' ? 2 : 1);
+            if (reg.data_type === 'uint32') {
+               val = (res.data[0] << 16) | res.data[1];
+            } else {
+               val = res.data[0];
+            }
+          }
+          
+          if (val !== null) {
+            // Apply multiplier and offset
+            if (reg.scale !== undefined) val = val * reg.scale;
+            if (reg.multiplier !== undefined) val = val * reg.multiplier;
+            if (reg.offset !== undefined) val = val + reg.offset;
+            
+            const regId = reg.name.toLowerCase().replace(/\\s+/g, '_');
+            
+            // Publish to MQTT
+            const topic = `modbus2mqtt/${deviceConfig.id}/sensor/${regId}/state`;
+            this.mqttClient.publish(topic, String(val), { retain: true });
+            
+            // Emit to SSE
+            logger.emit('value', { id: `${deviceConfig.id}_${regId}`, value: val });
+            
+            successCount++;
+          }
+        } catch (e) {
+          logger.error(`Error reading ${reg.name} from ${deviceConfig.name}: ${e.message}`);
+        }
+      }
+
+      // Watchdog logic
+      if (successCount === 0 && (deviceConfig.registers || []).length > 0) {
+        this.errorCounts[deviceConfig.id]++;
+        if (this.errorCounts[deviceConfig.id] >= 3) {
+          logger.warn(`Watchdog triggered for ${deviceConfig.name}. Closing connection.`);
+          client.close();
+          this.setStatus(deviceConfig, 'offline');
+        }
+      } else {
         this.errorCounts[deviceConfig.id] = 0;
         this.setStatus(deviceConfig, 'online');
-      } catch (e) {
-        logger.error(`Connection failed for ${deviceConfig.name}: ${e.message}`);
-        this.setStatus(deviceConfig, 'offline');
-        return;
       }
-    }
-
-    let successCount = 0;
-
-    for (const reg of deviceConfig.registers || []) {
-      try {
-        let val = null;
-        if (reg.type === 'input') {
-          const res = await client.readInputRegisters(reg.address, reg.data_type === 'uint32' ? 2 : 1);
-          if (reg.data_type === 'uint32') {
-             val = (res.data[0] << 16) | res.data[1];
-          } else {
-             val = res.data[0];
-          }
-        } else if (reg.type === 'holding') {
-          const res = await client.readHoldingRegisters(reg.address, reg.data_type === 'uint32' ? 2 : 1);
-          if (reg.data_type === 'uint32') {
-             val = (res.data[0] << 16) | res.data[1];
-          } else {
-             val = res.data[0];
-          }
-        }
-        
-        if (val !== null) {
-          // Apply multiplier and offset
-          if (reg.multiplier !== undefined) val = val * reg.multiplier;
-          if (reg.offset !== undefined) val = val + reg.offset;
-          
-          const regId = reg.name.toLowerCase().replace(/\\s+/g, '_');
-          
-          // Publish to MQTT
-          const topic = `modbus2mqtt/${deviceConfig.id}/sensor/${regId}/state`;
-          this.mqttClient.publish(topic, String(val), { retain: true });
-          
-          // Emit to SSE
-          logger.emit('value', { id: `${deviceConfig.id}_${regId}`, value: val });
-          
-          successCount++;
-        }
-      } catch (e) {
-        logger.error(`Error reading ${reg.name} from ${deviceConfig.name}: ${e.message}`);
-      }
-    }
-
-    // Watchdog logic
-    if (successCount === 0 && (deviceConfig.registers || []).length > 0) {
-      this.errorCounts[deviceConfig.id]++;
-      if (this.errorCounts[deviceConfig.id] >= 3) {
-        logger.warn(`Watchdog triggered for ${deviceConfig.name}. Closing connection.`);
-        client.close();
-        this.setStatus(deviceConfig, 'offline');
-      }
-    } else {
-      this.errorCounts[deviceConfig.id] = 0;
-      this.setStatus(deviceConfig, 'online');
+    } finally {
+      this.isPolling[deviceConfig.id] = false;
     }
   }
 
