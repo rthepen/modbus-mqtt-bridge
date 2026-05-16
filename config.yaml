@@ -1,37 +1,176 @@
-broker:
+mqtt:
+  host: '127.0.0.1'
   port: 1883
-  host: 0.0.0.0
+  topic_prefix: 'modbus2mqtt'
+  discovery_prefix: 'homeassistant'
 
-web:
-  port: 8080
-  host: 0.0.0.0
+polling_interval: 5000
 
-modbus:
-  polling_interval: 2000
-  devices:
-    - id: "growatt_inverter_1"
-      name: "Growatt Inverter 1"
-      ip: "192.168.50.96"
-      port: 41
-      slave_id: 51
-      registers:
-        - name: "Status"
-          address: 0
-          type: "input"
-          data_type: "uint16"
-          unit: ""
-          device_class: "enum"
-        - name: "Output Power"
-          address: 35
-          type: "input"
-          data_type: "uint32"
-          unit: "W"
-          scale: 0.1
-          device_class: "power"
-          state_class: "measurement"
+register_templates:
+  growatt_standard: &growatt_registers
+    - name: 'Inverter Status'
+      address: 0
+      type: 'input'
+      description: '0:waiting, 1:normal, 3:fault'
+    - name: 'Ppv'
+      address: 1
+      type: 'input'
+      data_type: 'uint32'
+      unit: 'W'
+      scale: 0.1
+    - name: 'Vpv1'
+      address: 3
+      type: 'input'
+      unit: 'V'
+      scale: 0.1
+    - name: 'PV1Curr'
+      address: 4
+      type: 'input'
+      unit: 'A'
+      scale: 0.1
+    - name: 'Ppv1'
+      address: 5
+      type: 'input'
+      data_type: 'uint32'
+      unit: 'W'
+      scale: 0.1
+    - name: 'Vpv2'
+      address: 7
+      type: 'input'
+      unit: 'V'
+      scale: 0.1
+    - name: 'PV2Curr'
+      address: 8
+      type: 'input'
+      unit: 'A'
+      scale: 0.1
+    - name: 'Ppv2'
+      address: 9
+      type: 'input'
+      data_type: 'uint32'
+      unit: 'W'
+      scale: 0.1
+    - name: 'Output Power'
+      address: 35
+      type: 'input'
+      data_type: 'uint32'
+      unit: 'W'
+      scale: 0.1
+    - name: 'Grid Frequency'
+      address: 37
+      type: 'input'
+      unit: 'Hz'
+      scale: 0.01
+    - name: 'Vac1'
+      address: 38
+      type: 'input'
+      unit: 'V'
+      scale: 0.1
+    - name: 'Iac1'
+      address: 39
+      type: 'input'
+      unit: 'A'
+      scale: 0.1
+    - name: 'Energy Today'
+      address: 53
+      type: 'input'
+      unit: 'kWh'
+      scale: 0.1
+    - name: 'Energy Total'
+      address: 55
+      type: 'input'
+      data_type: 'uint32'
+      unit: 'kWh'
+      scale: 0.1
+    - name: 'Inverter Temperature'
+      address: 93
+      type: 'input'
+      unit: 'C'
+      scale: 0.1
+    - name: 'IPM Temperature'
+      address: 94
+      type: 'input'
+      unit: 'C'
+      scale: 0.1
+    - name: 'Derating Mode'
+      address: 104
+      type: 'input'
+    - name: 'Fault code'
+      address: 105
+      type: 'input'
+    - name: 'Warning bit'
+      address: 110
+      type: 'input'
+    - name: 'Safety Function Enable'
+      address: 0
+      type: 'holding'
+    - name: 'Active P Rate'
+      address: 3
+      type: 'holding'
+      unit: '%'
+    - name: 'Reactive P Rate'
+      address: 4
+      type: 'holding'
+      unit: '%'
+    - name: 'Power Factor'
+      address: 5
+      type: 'holding'
+      scale: 0.0001
+    - name: 'Max Power'
+      address: 6
+      type: 'holding'
+      unit: 'VA'
+      scale: 0.1
+    - name: 'System Year'
+      address: 45
+      type: 'holding'
+    - name: 'System Month'
+      address: 46
+      type: 'holding'
+    - name: 'System Day'
+      address: 47
+      type: 'holding'
+    - name: 'System Hour'
+      address: 48
+      type: 'holding'
+    - name: 'System Minute'
+      address: 49
+      type: 'holding'
+    - name: 'System Second'
+      address: 50
+      type: 'holding'
+    - name: 'Export Limit Enable'
+      address: 122
+      type: 'holding'
 
-helpers:
-  - id: "dummy_switch_1"
-    name: "Dummy Switch 1"
-    type: "switch"
-    initial_state: "OFF"
+devices:
+  - name: 'Inverter 1'
+    id: 'growatt_1'
+    ip: '192.168.50.96'
+    port: 41
+    slave_id: 51
+    registers: *growatt_registers
+  - name: 'Inverter 2'
+    id: 'growatt_2'
+    ip: '192.168.50.96'
+    port: 41
+    slave_id: 52
+    registers: *growatt_registers
+  - name: 'Inverter 3'
+    id: 'growatt_3'
+    ip: '192.168.50.96'
+    port: 41
+    slave_id: 53
+    registers: *growatt_registers
+  - name: 'Inverter 4'
+    id: 'growatt_4'
+    ip: '192.168.50.96'
+    port: 41
+    slave_id: 54
+    registers: *growatt_registers
+  - name: 'Inverter 5'
+    id: 'growatt_5'
+    ip: '192.168.50.96'
+    port: 41
+    slave_id: 55
+    registers: *growatt_registers

@@ -20,7 +20,6 @@ program.command('start')
   .action(async (options) => {
     console.log('Starting Modbus-MQTT Bridge...');
     
-    // 1. Load config
     const configManager = new ConfigManager(options.config);
     const config = configManager.loadConfig();
     
@@ -31,48 +30,35 @@ program.command('start')
     
     configManager.startWatching();
 
-    // 2. Start MQTT Broker
     const brokerConfig = config.broker || { port: 1883, host: '0.0.0.0' };
     const broker = new MqttBroker(brokerConfig.port, brokerConfig.host);
     await broker.start();
 
-    // 3. Connect Internal MQTT Client
-    const internalMqttUrl = `mqtt://${brokerConfig.host === '0.0.0.0' ? '127.0.0.1' : brokerConfig.host}:${brokerConfig.port}`;
+    const internalMqttUrl = 'mqtt://' + (brokerConfig.host === '0.0.0.0' ? '127.0.0.1' : brokerConfig.host) + ':' + brokerConfig.port;
     const mqttClient = mqtt.connect(internalMqttUrl);
 
     mqttClient.on('connect', () => {
       console.log('Internal MQTT Client connected to Broker');
       
-      // 4. HA Auto Discovery
       const discovery = new DiscoveryManager(config, mqttClient);
       discovery.publishDiscovery();
 
-      // 5. Modbus Engine
-      const modbusEngine = new ModbusEngine(config.modbus, mqttClient);
+      const modbusEngine = new ModbusEngine(configManager, mqttClient);
       modbusEngine.start();
 
-      // 6. Helpers (Dummy devices)
       const helpersManager = new HelpersManager(config, mqttClient);
       helpersManager.start();
 
-      // 7. Web API & UI
       const webConfig = config.web || { port: 8080, host: '0.0.0.0' };
-      const webApi = new WebApi(configManager, helpersManager, webConfig.port, webConfig.host);
+      const webApi = new WebApi(configManager, helpersManager, mqttClient, webConfig.port, webConfig.host);
       webApi.start();
 
-      // Restart on config change
       configManager.on('configChanged', (newConfig) => {
-        console.log('Config changed, applying new config...');
-        modbusEngine.stop();
-        webApi.stop();
-        
-        // Very basic restart, ideally you'd gracefully swap instances
-        console.log('For deep config changes, please restart the service manually right now.');
+        console.log('Config changed detected.');
       });
       
-      // Handle graceful shutdown
       process.on('SIGINT', () => {
-        console.log('\\nGracefully shutting down from SIGINT (Ctrl-C)');
+        console.log('\nGracefully shutting down...');
         modbusEngine.stop();
         webApi.stop();
         broker.stop();
@@ -83,7 +69,6 @@ program.command('start')
 
 program.parse(process.argv);
 
-// If no command provided, show help
 if (!process.argv.slice(2).length) {
   program.outputHelp();
 }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Settings, Server, Activity, Save, Power, Terminal } from 'lucide-react';
+import { Settings, Server, Activity, Save, Power, Terminal, Send } from 'lucide-react';
 import axios from 'axios';
 import yaml from 'js-yaml';
 import './index.css';
@@ -11,6 +11,7 @@ function App() {
   
   const [logs, setLogs] = useState([]);
   const [liveValues, setLiveValues] = useState({});
+  const [pendingValues, setPendingValues] = useState({});
   const [deviceStatuses, setDeviceStatuses] = useState({});
   
   const logsEndRef = useRef(null);
@@ -20,6 +21,11 @@ function App() {
     
     // Server-Sent Events (SSE) for real-time updates
     const evtSource = new EventSource('/api/stream');
+    
+    evtSource.onopen = () => {
+      console.log('SSE connection established');
+    };
+
     evtSource.onmessage = (event) => {
       try {
         const { type, data } = JSON.parse(event.data);
@@ -31,8 +37,12 @@ function App() {
           setDeviceStatuses(prev => ({ ...prev, [data.id]: data.status }));
         }
       } catch (e) {
-        console.error("Error parsing SSE", e);
+        console.error('Error parsing SSE', e);
       }
+    };
+
+    evtSource.onerror = (err) => {
+      console.error('SSE error', err);
     };
     
     return () => evtSource.close();
@@ -56,7 +66,7 @@ function App() {
       const helpRes = await axios.get('/api/helpers');
       setHelpers(helpRes.data);
     } catch (e) {
-      console.error("Error fetching data", e);
+      console.error('Error fetching data', e);
     }
   };
 
@@ -68,6 +78,20 @@ function App() {
       alert('Configuration saved! Please restart the backend to apply all changes.');
     } catch (e) {
       alert('Invalid YAML configuration: ' + e.message);
+    }
+  };
+
+  const handleWriteRegister = async (deviceId, regName, value) => {
+    try {
+      await axios.post('/api/write', { deviceId, registerName: regName, value: parseFloat(value) });
+      // Clear pending value on success
+      setPendingValues(prev => {
+        const next = { ...prev };
+        delete next[`${deviceId}_${regName}`];
+        return next;
+      });
+    } catch (e) {
+      alert('Failed to write register: ' + (e.response?.data?.message || e.message));
     }
   };
 
@@ -85,7 +109,7 @@ function App() {
         <div className="card">
           <h2><Server size={20} /> Configured Devices</h2>
           <ul className="device-list">
-            {config?.modbus?.devices?.map((dev, i) => {
+            {config?.devices?.map((dev, i) => {
               const status = deviceStatuses[dev.id] || 'unknown';
               const isOnline = status === 'online';
               return (
@@ -101,12 +125,39 @@ function App() {
                   {dev.registers && dev.registers.length > 0 && (
                     <div style={{width: '100%', marginTop: '0.5rem', fontSize: '0.85rem', background: 'rgba(0,0,0,0.2)', padding: '0.5rem', borderRadius: '4px'}}>
                       {dev.registers.map(reg => {
-                         const regId = `${dev.id}_${reg.name.toLowerCase().replace(/\\s+/g, '_')}`;
-                         const val = liveValues[regId];
+                         const cleanName = reg.name.toLowerCase().trim().replace(/\s+/g, '_');
+                         const regKey = `${dev.id}_${cleanName}`;
+                         const val = liveValues[regKey];
+                         const isHolding = reg.type === 'holding';
+                         const pendingVal = pendingValues[regKey];
+
                          return (
-                           <div key={regId} style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.2rem'}}>
-                             <span>{reg.name}</span>
-                             <strong style={{color: 'var(--accent-color)'}}>{val !== undefined ? val : '--'} {reg.unit || ''}</strong>
+                           <div key={regKey} style={{display: 'flex', flexDirection: 'column', marginBottom: '0.5rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '0.3rem'}}>
+                             <div style={{display: 'flex', justifyContent: 'space-between', marginBottom: '0.2rem'}}>
+                               <span>{reg.name}</span>
+                               <strong style={{color: isHolding ? '#ffcc00' : 'var(--accent-color)'}}>
+                                 {val !== undefined ? val : '--'} {reg.unit || ''}
+                               </strong>
+                             </div>
+                             
+                             {isHolding && (
+                               <div style={{display: 'flex', gap: '0.5rem', marginTop: '0.2rem'}}>
+                                 <input 
+                                   type="number" 
+                                   placeholder="New value"
+                                   value={pendingVal !== undefined ? pendingVal : ''}
+                                   onChange={(e) => setPendingValues(prev => ({ ...prev, [regKey]: e.target.value }))}
+                                   style={{ flexGrow: 1, padding: '2px 8px', fontSize: '0.8rem', background: 'rgba(0,0,0,0.3)', border: '1px solid #444', color: 'white', borderRadius: '4px' }}
+                                 />
+                                 <button 
+                                   onClick={() => handleWriteRegister(dev.id, reg.name, pendingVal)}
+                                   disabled={pendingVal === undefined || pendingVal === ''}
+                                   style={{ padding: '2px 8px', fontSize: '0.75rem', background: 'var(--accent-color)', color: 'black', border: 'none', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px', opacity: (pendingVal === undefined || pendingVal === '') ? 0.5 : 1 }}
+                                 >
+                                   <Send size={12} /> Set
+                                 </button>
+                               </div>
+                             )}
                            </div>
                          );
                       })}
@@ -115,7 +166,7 @@ function App() {
                 </li>
               );
             })}
-            {(!config?.modbus?.devices || config.modbus.devices.length === 0) && (
+            {(!config?.devices || config.devices.length === 0) && (
               <p style={{color: 'var(--text-muted)'}}>No Modbus devices configured.</p>
             )}
           </ul>
@@ -135,30 +186,6 @@ function App() {
             ))}
             <div ref={logsEndRef} />
           </div>
-        </div>
-
-        <div className="card">
-          <h2><Power size={20} /> Dummy Helpers</h2>
-          <ul className="device-list">
-            {config?.helpers?.map((helper, i) => {
-              const state = helpers[helper.id] || helper.initial_state;
-              const isOn = state === 'ON';
-              return (
-                <li key={i} className="device-item" style={{alignItems: 'center'}}>
-                  <div className="device-info">
-                    <h3>{helper.name}</h3>
-                    <p>Type: {helper.type} | ID: {helper.id}</p>
-                    <p style={{marginTop: '0.25rem', color: isOn ? 'var(--accent-color)' : 'var(--text-muted)'}}>
-                      Status: {state}
-                    </p>
-                  </div>
-                </li>
-              );
-            })}
-            {(!config?.helpers || config.helpers.length === 0) && (
-              <p style={{color: 'var(--text-muted)'}}>No dummy helpers configured.</p>
-            )}
-          </ul>
         </div>
 
         <div className="card">

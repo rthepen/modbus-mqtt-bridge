@@ -1,142 +1,173 @@
-import ModbusRTU from "modbus-serial";
 import { logger } from './logger.js';
+import { exec } from 'child_process';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const HELPER_SCRIPT = path.join(__dirname, 'modbus_helper.py');
 
 class ModbusEngine {
-  constructor(config, mqttClient) {
-    this.config = config;
+  constructor(configManager, mqttClient) {
+    this.configManager = configManager;
     this.mqttClient = mqttClient;
-    this.devices = {};
     this.timers = [];
-    this.statuses = {}; // Track 'online' or 'offline'
+    this.statuses = {};
     this.errorCounts = {};
-    this.isPolling = {};
+    this.isPolling = false;
+    
+    this.setupMqttListeners();
+  }
+
+  setupMqttListeners() {
+    this.mqttClient.on('message', (topic, message) => {
+      const parts = topic.split('/');
+      if (parts.length === 5 && parts[0] === 'modbus2mqtt' && parts[2] === 'holding' && parts[4] === 'set') {
+        const deviceId = parts[1];
+        const regName = parts[3];
+        const value = parseFloat(message.toString());
+        
+        const config = this.configManager.getConfig();
+        const device = config.devices.find(d => d.id === deviceId);
+        if (device) {
+          const reg = device.registers.find(r => r.type === 'holding' && r.name.toLowerCase().replace(/\s+/g, '_') === regName);
+          if (reg) {
+            this.writeRegister(device, reg, value);
+          }
+        }
+      }
+    });
+
+    this.mqttClient.subscribe('modbus2mqtt/+/holding/+/set');
+  }
+
+  async writeRegister(device, reg, value) {
+    logger.info('Writing ' + value + ' to ' + device.name + ' register ' + reg.name);
+    
+    let rawValue = value;
+    if (reg.scale) rawValue = Math.round(value / reg.scale);
+
+    const cmd = 'python3 ' + HELPER_SCRIPT + ' ' + device.ip + ' ' + device.port + ' ' + device.slave_id + ' write ' + reg.address + ' ' + rawValue;
+    
+    exec(cmd, (error, stdout, stderr) => {
+      if (error) {
+        logger.error('Write failed: ' + (stderr || error.message));
+        return;
+      }
+      try {
+        const result = JSON.parse(stdout);
+        if (result.success) {
+          logger.info('Update success: ' + reg.name + ' = ' + value);
+          this.pollAll();
+        } else {
+          logger.error('Write error: ' + result.error);
+        }
+      } catch (e) {
+        logger.error('Invalid response from write helper');
+      }
+    });
   }
 
   async start() {
-    logger.info("Starting Modbus Engine...");
-    for (const dev of this.config.devices || []) {
+    logger.info('Modbus Engine starting (Hybrid R/W)...');
+    const config = this.configManager.getConfig();
+    for (const dev of config.devices || []) {
       this.statuses[dev.id] = 'offline';
       this.errorCounts[dev.id] = 0;
-      this.devices[dev.id] = new ModbusRTU();
-      
-      // Start polling loop
-      const interval = this.config.polling_interval || 5000;
-      const timer = setInterval(() => this.pollDevice(dev), interval);
-      this.timers.push(timer);
-
-      // Perform initial connection attempt immediately
-      this.pollDevice(dev);
     }
+
+    const interval = config.polling_interval || 5000;
+    const timer = setInterval(() => this.pollAll(), interval);
+    this.timers.push(timer);
+    setTimeout(() => this.pollAll(), 500);
   }
 
   setStatus(deviceConfig, status) {
     if (this.statuses[deviceConfig.id] !== status) {
       this.statuses[deviceConfig.id] = status;
-      logger.info(`Device ${deviceConfig.name} is now ${status}`);
-      
-      // Publish to MQTT
-      const topic = `modbus2mqtt/${deviceConfig.id}/status`;
+      logger.info('Device ' + deviceConfig.name + ' is now ' + status);
+      const topic = 'modbus2mqtt/' + deviceConfig.id + '/status';
       this.mqttClient.publish(topic, status, { retain: true });
-      
-      // Emit to SSE
-      logger.emit('status', { id: deviceConfig.id, status });
     }
+    logger.emit('status', { id: deviceConfig.id, status });
   }
 
-  async pollDevice(deviceConfig) {
-    if (this.isPolling[deviceConfig.id]) {
-      return; // Skip this poll, previous one is still running
-    }
-    this.isPolling[deviceConfig.id] = true;
+  async pollAll() {
+    if (this.isPolling) return;
+    this.isPolling = true;
 
     try {
-      const client = this.devices[deviceConfig.id];
+      const config = this.configManager.getConfig();
+      for (const deviceConfig of config.devices || []) {
+        const cmd = 'python3 ' + HELPER_SCRIPT + ' ' + deviceConfig.ip + ' ' + deviceConfig.port + ' ' + deviceConfig.slave_id + ' read';
+        
+        const result = await new Promise((resolve) => {
+          exec(cmd, (error, stdout, stderr) => {
+            if (error) { resolve({ error: stderr || error.message }); return; }
+            try { resolve(JSON.parse(stdout)); } catch (e) { resolve({ error: 'JSON Error' }); }
+          });
+        });
 
-      if (!client.isOpen) {
-        try {
-          const isRtuOverTcp = deviceConfig.rtu_over_tcp !== false; // Default to true for USR-N580
-          if (isRtuOverTcp) {
-            await client.connectTcpRTUBuffered(deviceConfig.ip, { port: deviceConfig.port });
-          } else {
-            await client.connectTCP(deviceConfig.ip, { port: deviceConfig.port });
-          }
-          client.setID(deviceConfig.slave_id);
-          client.setTimeout(3000);
-          this.errorCounts[deviceConfig.id] = 0;
-          this.setStatus(deviceConfig, 'online');
-        } catch (e) {
-          logger.error(`Connection failed for ${deviceConfig.name}: ${e.message}`);
-          this.setStatus(deviceConfig, 'offline');
-          return;
-        }
-      }
+        if (result.input || result.holding) {
+          let successCount = 0;
+          for (const reg of deviceConfig.registers || []) {
+            let dataArray = [];
+            let offset = reg.address;
 
-      let successCount = 0;
-
-      for (const reg of deviceConfig.registers || []) {
-        try {
-          let val = null;
-          if (reg.type === 'input') {
-            const res = await client.readInputRegisters(reg.address, reg.data_type === 'uint32' ? 2 : 1);
-            if (reg.data_type === 'uint32') {
-               val = (res.data[0] << 16) | res.data[1];
-            } else {
-               val = res.data[0];
+            if (reg.type === 'input') {
+              dataArray = result.input || [];
+            } else if (reg.type === 'holding') {
+              if (offset >= 1000) {
+                dataArray = result.holding_high || [];
+                offset -= 1000;
+              } else {
+                dataArray = result.holding || [];
+              }
             }
-          } else if (reg.type === 'holding') {
-            const res = await client.readHoldingRegisters(reg.address, reg.data_type === 'uint32' ? 2 : 1);
-            if (reg.data_type === 'uint32') {
-               val = (res.data[0] << 16) | res.data[1];
-            } else {
-               val = res.data[0];
+
+            if (offset < 0 || offset >= dataArray.length) continue;
+
+            let val = reg.data_type === 'uint32' 
+              ? (dataArray[offset] << 16) | dataArray[offset + 1]
+              : dataArray[offset];
+
+            if (val !== null && val !== undefined) {
+              if (reg.scale !== undefined) val = val * reg.scale;
+              const valStr = val.toFixed(2);
+              const regIdLower = reg.name.toLowerCase().trim();
+              const regType = reg.type || 'input';
+              
+              const mqttRegId = regIdLower.replace(/\s+/g, '_');
+              const topic = 'modbus2mqtt/' + deviceConfig.id + '/' + regType + '/' + mqttRegId + '/state';
+              this.mqttClient.publish(topic, valStr, { retain: true });
+              
+              const idWithSpace = deviceConfig.id + '_' + regIdLower;
+              const idWithUnderscore = deviceConfig.id + '_' + mqttRegId;
+              
+              logger.emit('value', { id: idWithSpace, value: valStr });
+              logger.emit('value', { id: idWithUnderscore, value: valStr });
+              
+              successCount++;
             }
           }
-          
-          if (val !== null) {
-            // Apply multiplier and offset
-            if (reg.scale !== undefined) val = val * reg.scale;
-            if (reg.multiplier !== undefined) val = val * reg.multiplier;
-            if (reg.offset !== undefined) val = val + reg.offset;
-            
-            const regId = reg.name.toLowerCase().replace(/\\s+/g, '_');
-            
-            // Publish to MQTT
-            const topic = `modbus2mqtt/${deviceConfig.id}/sensor/${regId}/state`;
-            this.mqttClient.publish(topic, String(val), { retain: true });
-            
-            // Emit to SSE
-            logger.emit('value', { id: `${deviceConfig.id}_${regId}`, value: val });
-            
-            successCount++;
+          if (successCount > 0) {
+            this.errorCounts[deviceConfig.id] = 0;
+            this.setStatus(deviceConfig, 'online');
           }
-        } catch (e) {
-          logger.error(`Error reading ${reg.name} from ${deviceConfig.name}: ${e.message}`);
+        } else {
+          this.errorCounts[deviceConfig.id]++;
+          if (this.errorCounts[deviceConfig.id] >= 3) {
+            this.setStatus(deviceConfig, 'offline');
+          }
         }
-      }
-
-      // Watchdog logic
-      if (successCount === 0 && (deviceConfig.registers || []).length > 0) {
-        this.errorCounts[deviceConfig.id]++;
-        if (this.errorCounts[deviceConfig.id] >= 3) {
-          logger.warn(`Watchdog triggered for ${deviceConfig.name}. Closing connection.`);
-          client.close();
-          this.setStatus(deviceConfig, 'offline');
-        }
-      } else {
-        this.errorCounts[deviceConfig.id] = 0;
-        this.setStatus(deviceConfig, 'online');
+        await new Promise(r => setTimeout(r, 200));
       }
     } finally {
-      this.isPolling[deviceConfig.id] = false;
+      this.isPolling = false;
     }
   }
 
   stop() {
     this.timers.forEach(t => clearInterval(t));
-    for (const key in this.devices) {
-       this.devices[key].close();
-    }
-    logger.info("Modbus Engine stopped");
   }
 }
 
