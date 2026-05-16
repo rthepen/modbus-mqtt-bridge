@@ -54,7 +54,12 @@ class ModbusEngine {
 
       if (!client.isOpen) {
         try {
-          await client.connectTCP(deviceConfig.ip, { port: deviceConfig.port });
+          const isRtuOverTcp = deviceConfig.rtu_over_tcp !== false; // Default to true for USR-N580
+          if (isRtuOverTcp) {
+            await client.connectTcpRTUBuffered(deviceConfig.ip, { port: deviceConfig.port });
+          } else {
+            await client.connectTCP(deviceConfig.ip, { port: deviceConfig.port });
+          }
           client.setID(deviceConfig.slave_id);
           client.setTimeout(3000);
           this.errorCounts[deviceConfig.id] = 0;
