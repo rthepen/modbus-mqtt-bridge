@@ -1,0 +1,37 @@
+broker:
+  port: 1883
+  host: 0.0.0.0
+
+web:
+  port: 8080
+  host: 0.0.0.0
+
+modbus:
+  polling_interval: 2000
+  devices:
+    - id: "growatt_inverter_1"
+      name: "Growatt Inverter 1"
+      ip: "192.168.50.96"
+      port: 41
+      slave_id: 51
+      registers:
+        - name: "Status"
+          address: 0
+          type: "input"
+          data_type: "uint16"
+          unit: ""
+          device_class: "enum"
+        - name: "Output Power"
+          address: 35
+          type: "input"
+          data_type: "uint32"
+          unit: "W"
+          scale: 0.1
+          device_class: "power"
+          state_class: "measurement"
+
+helpers:
+  - id: "dummy_switch_1"
+    name: "Dummy Switch 1"
+    type: "switch"
+    initial_state: "OFF"

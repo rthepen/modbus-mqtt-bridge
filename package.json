@@ -1,0 +1,25 @@
+{
+  "name": "modbus-mqtt-bridge",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "aedes": "^1.0.2",
+    "aedes-server-factory": "^0.2.1",
+    "chokidar": "^5.0.0",
+    "commander": "^14.0.3",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "js-yaml": "^4.1.1",
+    "modbus-serial": "^8.0.25",
+    "mqtt": "^5.15.1",
+    "winston": "^3.19.0"
+  }
+}
